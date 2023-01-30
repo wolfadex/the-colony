@@ -172,7 +172,6 @@ createSession email =
         , resolver = Http.stringResolver (jsonResolver decodeWorkOsSession)
         , timeout = Nothing
         }
-        |> Task.mapError (Debug.log "session err 1")
         |> Task.andThen
             (\workOsSession ->
                 Http.task
@@ -189,7 +188,6 @@ createSession email =
                     , timeout = Nothing
                     }
             )
-        |> Task.mapError (Debug.log "session err 2")
         |> Task.attempt CreateSessionRepsonded
 
 
