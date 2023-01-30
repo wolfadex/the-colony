@@ -121,92 +121,86 @@ updateFromFrontend sessionId clientId msg model =
 
         CreateSessionAttempt email ->
             ( model
-            , createSession clientId email
+            , createSession email
             )
 
         AuthenticateProfile code ->
             ( model
-            , authenticate sessionId clientId code
+            , authenticate sessionId code
             )
 
 
-authenticate : SessionId -> ClientId -> String -> Cmd BackendMsg
-authenticate sessionId clientId code =
+authenticate : SessionId -> String -> Cmd BackendMsg
+authenticate sessionId code =
+    Http.request
+        { method = "POST"
+        , url = workOsUrl ++ "/sso/token"
+        , headers = [ workOsAuth ]
+        , body =
+            [ ( "client_id", Json.Encode.string Env.workosClientId )
+            , ( "client_secret", Json.Encode.string Env.workosApiKey )
+            , ( "grant_type", Json.Encode.string "authorization_code" )
+            , ( "code", Json.Encode.string code )
+            ]
+                |> Json.Encode.object
+                |> Http.jsonBody
+        , expect = Http.expectJson (SignleSignOnResponded sessionId) (Json.Decode.field "profile" decodeProfile)
+        , timeout = Nothing
+        , tracker = Nothing
+        }
+
+
+createSession : String -> Cmd BackendMsg
+createSession email =
+    Http.task
+        { method = "POST"
+        , url = workOsUrl ++ "/passwordless/sessions"
+        , body =
+            [ Just ( "email", Json.Encode.string email )
+            , Just ( "type", Json.Encode.string "MagicLink" )
+            , case Env.mode of
+                Env.Development ->
+                    Just ( "redirect_uri", Json.Encode.string "http://localhost:8000/authenticated" )
+
+                Env.Production ->
+                    Nothing
+            ]
+                |> List.filterMap identity
+                |> Json.Encode.object
+                |> Http.jsonBody
+        , headers = [ workOsAuth ]
+        , resolver = Http.stringResolver (jsonResolver decodeWorkOsSession)
+        , timeout = Nothing
+        }
+        |> Task.mapError (Debug.log "session err 1")
+        |> Task.andThen
+            (\workOsSession ->
+                Http.task
+                    { method = "POST"
+                    , headers = [ workOsAuth ]
+                    , url = workOsUrl ++ "/passwordless/sessions/" ++ workOsSession.id ++ "/send"
+                    , body =
+                        [ ( "email", Json.Encode.string workOsSession.email )
+                        , ( "type", Json.Encode.string "MagicLink" )
+                        ]
+                            |> Json.Encode.object
+                            |> Http.jsonBody
+                    , resolver = Http.stringResolver (jsonResolver Json.Decode.bool)
+                    , timeout = Nothing
+                    }
+            )
+        |> Task.mapError (Debug.log "session err 2")
+        |> Task.attempt CreateSessionRepsonded
+
+
+workOsUrl : String
+workOsUrl =
     case Env.mode of
         Env.Development ->
-            if code == "development" then
-                Task.succeed
-                    (SignleSignOnResponded sessionId
-                        (Ok
-                            { id = "DEV_WORKOS_ID"
-                            , email = "DEV_EMAIL"
-                            , connectionId = "DEV_CONN_ID"
-                            , idpId = "DEV_IDP_ID"
-                            }
-                        )
-                    )
-                    |> Task.perform identity
-                -- Lamdera.sendToFrontend clientId (RedirectFrontend "/game")
-
-            else
-                Cmd.none
+            "http://localhost:8001/https://api.workos.com"
 
         Env.Production ->
-            Http.request
-                { method = "POST"
-                , url = "https://api.workos.com/sso/token"
-                , headers = [ workOsAuth ]
-                , body =
-                    [ ( "client_id", Json.Encode.string Env.workosClientId )
-                    , ( "client_secret", Json.Encode.string "TODO" )
-                    , ( "grant_type", Json.Encode.string "authorization_code" )
-                    , ( "code", Json.Encode.string code )
-                    ]
-                        |> Json.Encode.object
-                        |> Http.jsonBody
-                , expect = Http.expectJson (SignleSignOnResponded sessionId) (Json.Decode.field "profile" decodeProfile)
-                , timeout = Nothing
-                , tracker = Nothing
-                }
-
-
-createSession : ClientId -> String -> Cmd BackendMsg
-createSession clientId email =
-    case Env.mode of
-        Env.Development ->
-            Lamdera.sendToFrontend clientId (RedirectFrontend "/authenticated?code=development")
-
-        Env.Production ->
-            Http.task
-                { method = "POST"
-                , url = "https://api.workos.com/passwordless/sessions"
-                , body =
-                    [ ( "email", Json.Encode.string email )
-                    , ( "type", Json.Encode.string "MagicLink" )
-                    ]
-                        |> Json.Encode.object
-                        |> Http.jsonBody
-                , headers = [ workOsAuth ]
-                , resolver = Http.stringResolver (jsonResolver decodeWorkOsSession)
-                , timeout = Nothing
-                }
-                |> Task.andThen
-                    (\workOsSession ->
-                        Http.task
-                            { method = "POST"
-                            , headers = [ workOsAuth ]
-                            , url = "https://api.workos.com/passwordless/sessions/" ++ workOsSession.id ++ "/send"
-                            , body =
-                                [ ( "email", Json.Encode.string workOsSession.email )
-                                , ( "type", Json.Encode.string "MagicLink" )
-                                ]
-                                    |> Json.Encode.object
-                                    |> Http.jsonBody
-                            , resolver = Http.stringResolver (jsonResolver Json.Decode.bool)
-                            , timeout = Nothing
-                            }
-                    )
-                |> Task.attempt CreateSessionRepsonded
+            "https://api.workos.com"
 
 
 workOsAuth : Http.Header
